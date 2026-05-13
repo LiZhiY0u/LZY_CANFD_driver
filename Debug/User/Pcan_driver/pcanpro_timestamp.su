@@ -1,0 +1,3 @@
+../User/Pcan_driver/pcanpro_timestamp.c:7:6:pcan_timestamp_init	8	static
+../User/Pcan_driver/pcanpro_timestamp.c:41:10:pcan_timestamp_millis	8	static
+../User/Pcan_driver/pcanpro_timestamp.c:46:10:pcan_timestamp_us	8	static

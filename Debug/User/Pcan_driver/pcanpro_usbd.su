@@ -1,0 +1,16 @@
+../User/Pcan_driver/pcanpro_usbd.c:215:16:device_init	32	static
+../User/Pcan_driver/pcanpro_usbd.c:257:16:device_deinit	32	static
+../User/Pcan_driver/pcanpro_usbd.c:282:17:device_setup	16	static
+../User/Pcan_driver/pcanpro_usbd.c:298:16:device_ep0_rx_ready	16	static
+../User/Pcan_driver/pcanpro_usbd.c:304:16:device_data_in	32	static
+../User/Pcan_driver/pcanpro_usbd.c:336:16:device_data_out	24	static
+../User/Pcan_driver/pcanpro_usbd.c:368:17:device_get_hs_cfg	16	static
+../User/Pcan_driver/pcanpro_usbd.c:374:17:device_get_fs_cfg	16	static
+../User/Pcan_driver/pcanpro_usbd.c:380:17:device_get_other_speed_cfg	16	static
+../User/Pcan_driver/pcanpro_usbd.c:386:10:device_get_device_qualifier	16	static
+../User/Pcan_driver/pcanpro_usbd.c:393:16:sof_handler	24	static
+../User/Pcan_driver/pcanpro_usbd.c:403:17:device_get_user_string	24	static
+../User/Pcan_driver/pcanpro_usbd.c:452:6:pcan_usb_device_poll	8	static
+../User/Pcan_driver/pcanpro_usbd.c:457:10:pcan_usb_frame_number	4	static
+../User/Pcan_driver/pcanpro_usbd.c:466:5:pcan_flush_ep	24	static
+../User/Pcan_driver/pcanpro_usbd.c:475:5:pcan_flush_data	32	static

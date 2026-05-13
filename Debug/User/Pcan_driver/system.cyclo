@@ -1,0 +1,2 @@
+../User/Pcan_driver/system.c:4:6:system_irq_disable	1
+../User/Pcan_driver/system.c:13:6:system_irq_enable	1

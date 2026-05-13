@@ -1,0 +1,7 @@
+../User/User.c:9:6:BspFDCANInit	1
+../User/User.c:70:10:FDCAN1_Receive_Msg	2
+../User/User.c:79:10:FDCAN2_Receive_Msg	2
+../User/User.c:88:10:FDCAN1_Send_Msg	1
+../User/User.c:104:10:FDCAN2_Send_Msg	1
+../User/User.c:122:6:BSP_IWDG1_Init	2
+../User/User.c:134:6:User_main	1

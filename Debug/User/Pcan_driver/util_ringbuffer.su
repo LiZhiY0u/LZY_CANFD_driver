@@ -1,0 +1,2 @@
+../User/Pcan_driver/util_ringbuffer.c:6:10:util_ringbuffer_get	32	static
+../User/Pcan_driver/util_ringbuffer.c:45:10:util_ringbuffer_put	32	static

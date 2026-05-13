@@ -1,0 +1,7 @@
+../User/Pcan_driver/log.c:26:13:console_puts	2
+../User/Pcan_driver/log.c:33:13:console_put	2
+../User/Pcan_driver/log.c:42:6:log_init	1
+../User/Pcan_driver/log.c:50:6:log_printf	2
+../User/Pcan_driver/log.c:65:6:log_printk	1
+../User/Pcan_driver/log.c:77:6:log_process	2
+../User/Pcan_driver/log.c:90:6:log_bytesdump	2
