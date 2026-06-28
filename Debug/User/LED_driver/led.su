@@ -1,7 +1,0 @@
-../User/LED_driver/led.c:57:6:LED_Init	8	static
-../User/LED_driver/led.c:73:6:LED_Process	16	static
-../User/LED_driver/led.c:202:6:LED_CAN1_Rx	8	static
-../User/LED_driver/led.c:211:6:LED_CAN1_Tx	8	static
-../User/LED_driver/led.c:220:6:LED_CAN2_Rx	8	static
-../User/LED_driver/led.c:229:6:LED_CAN2_Tx	8	static
-../User/LED_driver/led.c:238:6:LED_SetStatusMode	16	static

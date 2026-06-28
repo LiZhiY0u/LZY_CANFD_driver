@@ -1,3 +1,0 @@
-../User/Pcan_driver/pcanpro_led.c:16:6:pcan_led_init	1
-../User/Pcan_driver/pcanpro_led.c:58:6:pcan_led_set_mode	1
-../User/Pcan_driver/pcanpro_led.c:130:6:pcan_led_poll	1

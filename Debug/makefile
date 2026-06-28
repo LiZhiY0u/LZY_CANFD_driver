@@ -9,9 +9,6 @@ RM := rm -rf
 
 # All of the sources participating in the build are defined here
 -include sources.mk
--include User/Usart_driver/subdir.mk
--include User/Pcan_driver/subdir.mk
--include User/subdir.mk
 -include Drivers/STM32H7xx_HAL_Driver/Src/subdir.mk
 -include Core/Startup/subdir.mk
 -include Core/Src/subdir.mk
@@ -37,40 +34,40 @@ $(wildcard ../makefile.init) \
 $(wildcard ../makefile.targets) \
 
 
-BUILD_ARTIFACT_NAME := pcan_H723_V1
+BUILD_ARTIFACT_NAME := LZY_CANFD_driver
 BUILD_ARTIFACT_EXTENSION := elf
 BUILD_ARTIFACT_PREFIX :=
 BUILD_ARTIFACT := $(BUILD_ARTIFACT_PREFIX)$(BUILD_ARTIFACT_NAME)$(if $(BUILD_ARTIFACT_EXTENSION),.$(BUILD_ARTIFACT_EXTENSION),)
 
 # Add inputs and outputs from these tool invocations to the build variables 
 EXECUTABLES += \
-pcan_H723_V1.elf \
+LZY_CANFD_driver.elf \
 
 MAP_FILES += \
-pcan_H723_V1.map \
+LZY_CANFD_driver.map \
 
 SIZE_OUTPUT += \
 default.size.stdout \
 
 OBJDUMP_LIST += \
-pcan_H723_V1.list \
+LZY_CANFD_driver.list \
 
 OBJCOPY_HEX += \
-pcan_H723_V1.hex \
+LZY_CANFD_driver.hex \
 
 OBJCOPY_BIN += \
-pcan_H723_V1.bin \
+LZY_CANFD_driver.bin \
 
 
 # All Target
 all: main-build
 
 # Main-build Target
-main-build: pcan_H723_V1.elf secondary-outputs
+main-build: LZY_CANFD_driver.elf secondary-outputs
 
 # Tool invocations
-pcan_H723_V1.elf pcan_H723_V1.map: $(OBJS) $(USER_OBJS) D:\003_own_projects\CAN_learn\pcan_H723_V5_iwdg\STM32H723VGTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "pcan_H723_V1.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m7 -T"D:\003_own_projects\CAN_learn\pcan_H723_V5_iwdg\STM32H723VGTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="pcan_H723_V1.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+LZY_CANFD_driver.elf LZY_CANFD_driver.map: $(OBJS) $(USER_OBJS) C:\Users\Cainiao\Desktop\CANFD_test\LZY_CANFD_driver\STM32H723VGTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "LZY_CANFD_driver.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m7 -T"C:\Users\Cainiao\Desktop\CANFD_test\LZY_CANFD_driver\STM32H723VGTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="LZY_CANFD_driver.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv5-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
@@ -79,24 +76,24 @@ default.size.stdout: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
 	@echo 'Finished building: $@'
 	@echo ' '
 
-pcan_H723_V1.list: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-objdump -h -S $(EXECUTABLES) > "pcan_H723_V1.list"
+LZY_CANFD_driver.list: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-objdump -h -S $(EXECUTABLES) > "LZY_CANFD_driver.list"
 	@echo 'Finished building: $@'
 	@echo ' '
 
-pcan_H723_V1.hex: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-objcopy  -O ihex $(EXECUTABLES) "pcan_H723_V1.hex"
+LZY_CANFD_driver.hex: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-objcopy  -O ihex $(EXECUTABLES) "LZY_CANFD_driver.hex"
 	@echo 'Finished building: $@'
 	@echo ' '
 
-pcan_H723_V1.bin: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-objcopy  -O binary $(EXECUTABLES) "pcan_H723_V1.bin"
+LZY_CANFD_driver.bin: $(EXECUTABLES) makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-objcopy  -O binary $(EXECUTABLES) "LZY_CANFD_driver.bin"
 	@echo 'Finished building: $@'
 	@echo ' '
 
 # Other Targets
 clean:
-	-$(RM) default.size.stdout pcan_H723_V1.bin pcan_H723_V1.elf pcan_H723_V1.hex pcan_H723_V1.list pcan_H723_V1.map
+	-$(RM) LZY_CANFD_driver.bin LZY_CANFD_driver.elf LZY_CANFD_driver.hex LZY_CANFD_driver.list LZY_CANFD_driver.map default.size.stdout
 	-@echo ' '
 
 secondary-outputs: $(SIZE_OUTPUT) $(OBJDUMP_LIST) $(OBJCOPY_HEX) $(OBJCOPY_BIN)

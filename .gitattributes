@@ -1,0 +1,7 @@
+* text=auto
+
+# 强制保持 LF（适合嵌入式项目的 makefile、链接脚本）
+*.mk    text eol=lf
+*.ld    text eol=lf
+*.c     text eol=lf
+*.h     text eol=lf

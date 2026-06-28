@@ -27,7 +27,4 @@ SUBDIRS := \
 Core/Src \
 Core/Startup \
 Drivers/STM32H7xx_HAL_Driver/Src \
-User/Pcan_driver \
-User/Usart_driver \
-User \
 
