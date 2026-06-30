@@ -27,7 +27,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "User.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -105,7 +105,7 @@ int main(void)
   MX_TIM16_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  User_main();
   /* USER CODE END 2 */
 
   /* Infinite loop */
