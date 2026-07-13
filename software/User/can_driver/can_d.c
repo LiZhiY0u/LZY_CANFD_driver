@@ -473,19 +473,19 @@ void can_protocol_rx_frame(uint8_t channel, uint32_t id, bool ide, bool fdf, boo
             15, 15, 15, 15, 15, 15, 15, 15, /* 49 - 56 */
             15, 15, 15, 15, 15, 15, 15, 15  /* 57 - 64 */
         };
-    struct ucan_rx_msg *can_msg;
+    struct ucan_rx_msg can_msg = {0};
 
     if (len > 64)
         len = 64;
 
-    can_msg->channel = channel;
-    can_msg->ide = ide;
-    can_msg->fdf = fdf;
-    can_msg->brs = brs;
-    can_msg->len = can_fd_len2dlc[len];
+    can_msg.channel = channel;
+    can_msg.ide = ide;
+    can_msg.fdf = fdf;
+    can_msg.brs = brs;
+    can_msg.len = can_fd_len2dlc[len];
 
-    can_msg->id = id;
-    memcpy(can_msg->d, data, len);
+    can_msg.id = id;
+    memcpy(can_msg.d, data, len);
 }
 
 void can_protocol_init(void)
