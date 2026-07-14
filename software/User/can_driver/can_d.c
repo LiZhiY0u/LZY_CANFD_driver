@@ -45,11 +45,11 @@ struct ucan_rx_msg
     uint8_t len;
 } __attribute__((packed));
 
-static can_frame_t frm_buffer[CAN_TX_QUEUE_SIZE];
+static can_frame_t frm_buffer[CAN_BUS_TOTAL][CAN_TX_QUEUE_SIZE];
 static uint32_t wr_pos[CAN_BUS_TOTAL], rd_pos[CAN_BUS_TOTAL], tx_num[CAN_BUS_TOTAL];
-static bool connected = false;
+static bool bus_active[CAN_BUS_TOTAL];
 static can_rx_indicate_t fdcan1_rx_indicate = nullptr, fdcan2_rx_indicate = nullptr;
-const static bitrate_config_t bitrate_configs[] = {
+static const bitrate_config_t bitrate_configs[] = {
     // clock   = apb1 = 120MHz
     // bitrate = clock / (brp * (tsync + tseg1 + tseg2))
     // sample  = (tsync + tseg1) / (tsync + tseg1 + tseg2) * 100%
@@ -111,11 +111,31 @@ static uint32_t len_to_dlc(uint8_t len)
     return 0;
 }
 
+static FDCAN_HandleTypeDef *can_get_handle(uint8_t bus)
+{
+    if (bus == CAN_BUS_1)
+    {
+        return &hfdcan1;
+    }
+    if (bus == CAN_BUS_2)
+    {
+        return &hfdcan2;
+    }
+    return nullptr;
+}
+
+static void can_queue_reset(uint8_t bus)
+{
+    wr_pos[bus] = 0;
+    rd_pos[bus] = 0;
+    tx_num[bus] = 0;
+}
+
 static void can_rx_proc(void)
 {
     FDCAN_RxHeaderTypeDef FDCAN1_RxHeader, FDCAN2_RxHeader;
     uint8_t FD1_data[64], FD2_data[64];
-    if (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan1, FDCAN_RX_FIFO0) > 0)
+    if (bus_active[CAN_BUS_1] && HAL_FDCAN_GetRxFifoFillLevel(&hfdcan1, FDCAN_RX_FIFO0) > 0)
     {
         if (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &FDCAN1_RxHeader, FD1_data) == HAL_OK)
         {
@@ -133,7 +153,7 @@ static void can_rx_proc(void)
         }
     }
 
-    if (HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO1) > 0)
+    if (bus_active[CAN_BUS_2] && HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO1) > 0)
     {
         if (HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO1, &FDCAN2_RxHeader, FD2_data) == HAL_OK)
         {
@@ -152,74 +172,43 @@ static void can_rx_proc(void)
     }
 }
 
-static void can_tx_proc(void)
+static void can_tx_bus_proc(uint8_t bus, FDCAN_HandleTypeDef *hfdcan)
 {
-    if (tx_num[CAN_BUS_1] != 0 && HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan1) > 0)
+    if (!bus_active[bus] || tx_num[bus] == 0 || HAL_FDCAN_GetTxFifoFreeLevel(hfdcan) == 0)
     {
-        FDCAN_TxHeaderTypeDef header1 = {0};
-        can_frame_t *frame = frm_buffer + rd_pos[CAN_BUS_1];
-
-        rd_pos[CAN_BUS_1] = (rd_pos[CAN_BUS_1] + 1) % CAN_TX_QUEUE_SIZE;
-        tx_num[CAN_BUS_1]--;
-
-        header1.Identifier = frame->id;
-        header1.BitRateSwitch = frame->brs ? FDCAN_BRS_ON : FDCAN_BRS_OFF;
-        header1.IdType = frame->ide ? FDCAN_EXTENDED_ID : FDCAN_STANDARD_ID;
-        header1.FDFormat = frame->fdf ? FDCAN_FD_CAN : FDCAN_CLASSIC_CAN;
-        header1.DataLength = len_to_dlc(frame->len);
-        header1.TxFrameType = FDCAN_DATA_FRAME;
-        header1.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-        header1.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
-        header1.MessageMarker = 0;
-
-        if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan1, &header1, frame->data) != 0)
-        {
-            // log_printf("fdcan1 send frame fail\n");
-        }
+        return;
     }
-    if (tx_num[CAN_BUS_2] != 0 && HAL_FDCAN_GetTxFifoFreeLevel(&hfdcan2) > 0)
+
+    FDCAN_TxHeaderTypeDef header = {0};
+    can_frame_t *frame = &frm_buffer[bus][rd_pos[bus]];
+
+    header.Identifier = frame->id;
+    header.BitRateSwitch = frame->brs ? FDCAN_BRS_ON : FDCAN_BRS_OFF;
+    header.IdType = frame->ide ? FDCAN_EXTENDED_ID : FDCAN_STANDARD_ID;
+    header.FDFormat = frame->fdf ? FDCAN_FD_CAN : FDCAN_CLASSIC_CAN;
+    header.DataLength = len_to_dlc(frame->len);
+    header.TxFrameType = FDCAN_DATA_FRAME;
+    header.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
+    header.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
+    header.MessageMarker = 0;
+
+    if (HAL_FDCAN_AddMessageToTxFifoQ(hfdcan, &header, frame->data) == HAL_OK)
     {
-        FDCAN_TxHeaderTypeDef header2 = {0};
-        can_frame_t *frame = frm_buffer + rd_pos[CAN_BUS_2];
-
-        rd_pos[CAN_BUS_2] = (rd_pos[CAN_BUS_2] + 1) % CAN_TX_QUEUE_SIZE;
-        tx_num[CAN_BUS_2]--;
-
-        header2.Identifier = frame->id;
-        header2.BitRateSwitch = frame->brs ? FDCAN_BRS_ON : FDCAN_BRS_OFF;
-        header2.IdType = frame->ide ? FDCAN_EXTENDED_ID : FDCAN_STANDARD_ID;
-        header2.FDFormat = frame->fdf ? FDCAN_FD_CAN : FDCAN_CLASSIC_CAN;
-        header2.DataLength = len_to_dlc(frame->len);
-        header2.TxFrameType = FDCAN_DATA_FRAME;
-        header2.ErrorStateIndicator = FDCAN_ESI_ACTIVE;
-        header2.TxEventFifoControl = FDCAN_NO_TX_EVENTS;
-        header2.MessageMarker = 0;
-
-        if (HAL_FDCAN_AddMessageToTxFifoQ(&hfdcan2, &header2, frame->data) != 0)
-        {
-            // log_printf("fdcan2 send frame fail\n");
-        }
+        rd_pos[bus] = (rd_pos[bus] + 1) % CAN_TX_QUEUE_SIZE;
+        tx_num[bus]--;
     }
 }
 
-static void can_state_reset(void)
+static void can_tx_proc(void)
 {
-    wr_pos[CAN_BUS_1] = 0;
-    wr_pos[CAN_BUS_2] = 0;
-    rd_pos[CAN_BUS_1] = 0;
-    rd_pos[CAN_BUS_2] = 0;
-    tx_num[CAN_BUS_1] = 0;
-    tx_num[CAN_BUS_2] = 0;
-    connected = false;
+    can_tx_bus_proc(CAN_BUS_1, &hfdcan1);
+    can_tx_bus_proc(CAN_BUS_2, &hfdcan2);
 }
 
 void can_process(void)
 {
-    if (connected)
-    {
-        can_rx_proc();
-        can_tx_proc();
-    }
+    can_rx_proc();
+    can_tx_proc();
 }
 
 /// @brief Send a CAN frame
@@ -233,16 +222,34 @@ void can_process(void)
 /// @return
 int can_send(uint8_t channel, uint32_t id, bool ide, bool fdf, bool brs, const uint8_t *data, uint8_t len)
 {
-    if (tx_num[channel] == CAN_TX_QUEUE_SIZE)
+    if (channel >= CAN_BUS_TOTAL || len > 64 || (len > 0 && data == nullptr))
     {
         return -1;
     }
-    frm_buffer[wr_pos[channel]].id = id;
-    frm_buffer[wr_pos[channel]].ide = ide;
-    frm_buffer[wr_pos[channel]].fdf = fdf;
-    frm_buffer[wr_pos[channel]].brs = brs;
-    frm_buffer[wr_pos[channel]].len = len;
-    memcpy(frm_buffer[wr_pos[channel]].data, data, len);
+    if ((!ide && id > 0x7ffU) || (ide && id > 0x1fffffffU))
+    {
+        return -1;
+    }
+    if ((!fdf && len > 8) || (!fdf && brs))
+    {
+        return -1;
+    }
+    if (tx_num[channel] >= CAN_TX_QUEUE_SIZE)
+    {
+        return -1;
+    }
+
+    can_frame_t *frame = &frm_buffer[channel][wr_pos[channel]];
+    frame->id = id;
+    frame->ide = ide;
+    frame->fdf = fdf;
+    frame->brs = brs;
+    frame->len = len;
+    memset(frame->data, 0, sizeof(frame->data));
+    if (len > 0)
+    {
+        memcpy(frame->data, data, len);
+    }
     wr_pos[channel] = (wr_pos[channel] + 1) % CAN_TX_QUEUE_SIZE;
     tx_num[channel]++;
     return 0;
@@ -289,10 +296,14 @@ void FDCAN_Filter_Init(FDCAN_HandleTypeDef *hfdcan)
 
 int fdcan_config(FDCAN_HandleTypeDef *hfdcan, uint32_t nomi_bitrate, uint32_t data_bitrate)
 {
-
     int nomi_cfg = -1, data_cfg = -1;
 
-    for (int i = 0; i < util_arraylen(bitrate_configs); i++)
+    if (hfdcan != &hfdcan1 && hfdcan != &hfdcan2)
+    {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < util_arraylen(bitrate_configs); i++)
     {
         if (bitrate_configs[i].bitrate == nomi_bitrate)
         {
@@ -303,6 +314,15 @@ int fdcan_config(FDCAN_HandleTypeDef *hfdcan, uint32_t nomi_bitrate, uint32_t da
             data_cfg = i;
         }
     }
+
+    if (nomi_cfg < 0 || data_cfg < 0)
+    {
+        return -1;
+    }
+
+    uint8_t bus = (hfdcan == &hfdcan1) ? CAN_BUS_1 : CAN_BUS_2;
+    bus_active[bus] = false;
+    can_queue_reset(bus);
 
     if (hfdcan == &hfdcan1)
     {
@@ -342,7 +362,7 @@ int fdcan_config(FDCAN_HandleTypeDef *hfdcan, uint32_t nomi_bitrate, uint32_t da
 
         if (HAL_FDCAN_Init(hfdcan) != HAL_OK)
         {
-            Error_Handler();
+            return -1;
         }
         FDCAN_Filter_Init(hfdcan);
     }
@@ -385,41 +405,68 @@ int fdcan_config(FDCAN_HandleTypeDef *hfdcan, uint32_t nomi_bitrate, uint32_t da
 
         if (HAL_FDCAN_Init(hfdcan) != HAL_OK)
         {
-            Error_Handler();
+            return -1;
         }
         FDCAN_Filter_Init(hfdcan);
     }
+
+    return 0;
 }
 
 int can_connect(uint8_t bus)
 {
-    if (bus == CAN_BUS_1)
+    FDCAN_HandleTypeDef *hfdcan = can_get_handle(bus);
+    if (hfdcan == nullptr)
     {
-        wr_pos[CAN_BUS_1] = 0;
-        rd_pos[CAN_BUS_1] = 0;
-        tx_num[CAN_BUS_1] = 0;
+        return -1;
     }
-    else if (bus == CAN_BUS_2)
+
+    if (bus_active[bus])
     {
-        wr_pos[CAN_BUS_2] = 0;
-        rd_pos[CAN_BUS_2] = 0;
-        tx_num[CAN_BUS_2] = 0;
+        return 0;
     }
-    connected = true;
+
+    HAL_FDCAN_StateTypeDef state = HAL_FDCAN_GetState(hfdcan);
+    if (state == HAL_FDCAN_STATE_READY)
+    {
+        if (HAL_FDCAN_Start(hfdcan) != HAL_OK)
+        {
+            return -1;
+        }
+    }
+    else if (state != HAL_FDCAN_STATE_BUSY)
+    {
+        return -1;
+    }
+
+    can_queue_reset(bus);
+    bus_active[bus] = true;
     return 0;
 }
 
 int can_unconnect(uint8_t bus)
 {
-    if (bus == CAN_BUS_1)
+    FDCAN_HandleTypeDef *hfdcan = can_get_handle(bus);
+    if (hfdcan == nullptr)
     {
-        HAL_FDCAN_Stop(&hfdcan1);
+        return -1;
     }
-    else if (bus == CAN_BUS_2)
+
+    HAL_FDCAN_StateTypeDef state = HAL_FDCAN_GetState(hfdcan);
+    if (state == HAL_FDCAN_STATE_BUSY)
     {
-        HAL_FDCAN_Stop(&hfdcan2);
+        if (HAL_FDCAN_Stop(hfdcan) != HAL_OK)
+        {
+            return -1;
+        }
     }
-    connected = false;
+    else if (state != HAL_FDCAN_STATE_READY)
+    {
+        return -1;
+    }
+
+    bus_active[bus] = false;
+    can_queue_reset(bus);
     return 0;
 }
 
