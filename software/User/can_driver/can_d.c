@@ -4,67 +4,49 @@
 #include <string.h>
 
 #define CAN_TX_QUEUE_SIZE 128
-
-#ifndef nullptr
-#define nullptr ((void *)0)
-#endif
+#define CAN_RX_QUEUE_SIZE 32
+#define CAN_BUS_OFF_RECOVERY_DELAY_MS 100U
 
 #define util_arraylen(array) (sizeof(array) / sizeof(array[0]))
 
+typedef void (*can_rx_indicate_t)(uint8_t bus, uint32_t id, bool ide, bool fdf, bool brs,
+                                  const uint8_t *data, uint8_t len);
+
 typedef struct
 {
-    uint32_t frq;
     uint32_t bitrate;
-    uint8_t sample;
-    uint8_t brp;
-    uint8_t tsync;
-    uint8_t tseg1;
-    uint8_t tseg2;
+    uint16_t brp;
+    uint16_t sjw;
+    uint16_t tseg1;
+    uint16_t tseg2;
 } bitrate_config_t;
-
-typedef struct
-{
-    uint32_t id;
-    bool fdf;
-    bool ide;
-    bool brs;
-    uint8_t len;
-    uint8_t data[64];
-} can_frame_t;
-
-struct ucan_rx_msg
-{
-
-    uint8_t channel;
-    uint32_t id;
-    bool ide;
-    bool fdf;
-    bool brs;
-
-    uint8_t d[64];
-    uint8_t len;
-} __attribute__((packed));
 
 static can_frame_t frm_buffer[CAN_BUS_TOTAL][CAN_TX_QUEUE_SIZE];
 static uint32_t wr_pos[CAN_BUS_TOTAL], rd_pos[CAN_BUS_TOTAL], tx_num[CAN_BUS_TOTAL];
+static can_frame_t rx_buffer[CAN_BUS_TOTAL][CAN_RX_QUEUE_SIZE];
+static uint32_t rx_wr_pos[CAN_BUS_TOTAL], rx_rd_pos[CAN_BUS_TOTAL], rx_num[CAN_BUS_TOTAL];
+static uint32_t rx_drop_count[CAN_BUS_TOTAL];
+static volatile uint32_t error_status[CAN_BUS_TOTAL], hal_error_code[CAN_BUS_TOTAL];
+static volatile uint32_t bus_off_recovery_tick[CAN_BUS_TOTAL];
+static volatile bool bus_off_recovery_pending[CAN_BUS_TOTAL];
 static bool bus_active[CAN_BUS_TOTAL];
-static can_rx_indicate_t fdcan1_rx_indicate = nullptr, fdcan2_rx_indicate = nullptr;
+static can_rx_indicate_t fdcan1_rx_indicate = NULL, fdcan2_rx_indicate = NULL;
 static const bitrate_config_t bitrate_configs[] = {
-    // clock   = apb1 = 120MHz
-    // bitrate = clock / (brp * (tsync + tseg1 + tseg2))
-    // sample  = (tsync + tseg1) / (tsync + tseg1 + tseg2) * 100%
+    // FDCAN kernel clock = 120 MHz
+    // bitrate = clock / (brp * (1 + tseg1 + tseg2))
+    // sample point = (1 + tseg1) / (1 + tseg1 + tseg2) * 100%
     // clang-format off
-    // frq        bitrate  sample(%)  brp, tsync  tseg1  tseg2
-    {  120000000, 100000,   80,       24,  10,     39,    10   },  // 100k
-    {  120000000, 200000,   80,       12,  10,     39,    10   },  // 200k
-    {  120000000, 500000,   80,        4,  10,     47,    12   },  // 500k
-    {  120000000, 800000,   80,        3,  10,     39,    10   },  // 800k
-    {  120000000, 1000000,  80,        4,   5,     23,    6    },  // 1.00M
-    {  120000000, 2000000,  80,        2,   5,     23,    6    },  // 2.00M
-    {  120000000, 4000000,  80,        1,   5,     23,    6    },  // 4.00M
-    {  120000000, 5000000,  75,        1,   5,     17,    6    },  // 5.00M
-    {  120000000, 8000000,  73,        1,   1,     10,    4    },  // 8.00M
-    {  120000000, 10000000, 75,        3,   1,     2,     1    },  // 10.00M
+    // bitrate   brp  sjw  tseg1  tseg2
+    {  100000,    24,  10,    39,    10 },  // 100 kbit/s
+    {  200000,    12,  10,    39,    10 },  // 200 kbit/s
+    {  500000,     4,  10,    47,    12 },  // 500 kbit/s
+    {  800000,     3,  10,    39,    10 },  // 800 kbit/s
+    { 1000000,     4,   5,    23,     6 },  // 1 Mbit/s
+    { 2000000,     2,   5,    23,     6 },  // 2 Mbit/s
+    { 4000000,     1,   5,    23,     6 },  // 4 Mbit/s
+    { 5000000,     1,   5,    17,     6 },  // 5 Mbit/s
+    { 8000000,     1,   1,    10,     4 },  // 8 Mbit/s
+    {10000000,     3,   1,     2,     1 },  // 10 Mbit/s
     // clang-format on
 };
 
@@ -121,7 +103,20 @@ static FDCAN_HandleTypeDef *can_get_handle(uint8_t bus)
     {
         return &hfdcan2;
     }
-    return nullptr;
+    return NULL;
+}
+
+static int can_get_bus(FDCAN_HandleTypeDef *hfdcan)
+{
+    if (hfdcan == &hfdcan1)
+    {
+        return CAN_BUS_1;
+    }
+    if (hfdcan == &hfdcan2)
+    {
+        return CAN_BUS_2;
+    }
+    return -1;
 }
 
 static void can_queue_reset(uint8_t bus)
@@ -129,13 +124,18 @@ static void can_queue_reset(uint8_t bus)
     wr_pos[bus] = 0;
     rd_pos[bus] = 0;
     tx_num[bus] = 0;
+    rx_wr_pos[bus] = 0;
+    rx_rd_pos[bus] = 0;
+    rx_num[bus] = 0;
+    rx_drop_count[bus] = 0;
 }
 
 static void can_rx_proc(void)
 {
     FDCAN_RxHeaderTypeDef FDCAN1_RxHeader, FDCAN2_RxHeader;
     uint8_t FD1_data[64], FD2_data[64];
-    if (bus_active[CAN_BUS_1] && HAL_FDCAN_GetRxFifoFillLevel(&hfdcan1, FDCAN_RX_FIFO0) > 0)
+    if (bus_active[CAN_BUS_1] && !bus_off_recovery_pending[CAN_BUS_1] &&
+        HAL_FDCAN_GetRxFifoFillLevel(&hfdcan1, FDCAN_RX_FIFO0) > 0)
     {
         if (HAL_FDCAN_GetRxMessage(&hfdcan1, FDCAN_RX_FIFO0, &FDCAN1_RxHeader, FD1_data) == HAL_OK)
         {
@@ -153,7 +153,8 @@ static void can_rx_proc(void)
         }
     }
 
-    if (bus_active[CAN_BUS_2] && HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO1) > 0)
+    if (bus_active[CAN_BUS_2] && !bus_off_recovery_pending[CAN_BUS_2] &&
+        HAL_FDCAN_GetRxFifoFillLevel(&hfdcan2, FDCAN_RX_FIFO1) > 0)
     {
         if (HAL_FDCAN_GetRxMessage(&hfdcan2, FDCAN_RX_FIFO1, &FDCAN2_RxHeader, FD2_data) == HAL_OK)
         {
@@ -174,7 +175,8 @@ static void can_rx_proc(void)
 
 static void can_tx_bus_proc(uint8_t bus, FDCAN_HandleTypeDef *hfdcan)
 {
-    if (!bus_active[bus] || tx_num[bus] == 0 || HAL_FDCAN_GetTxFifoFreeLevel(hfdcan) == 0)
+    if (!bus_active[bus] || bus_off_recovery_pending[bus] || tx_num[bus] == 0 ||
+        HAL_FDCAN_GetTxFifoFreeLevel(hfdcan) == 0)
     {
         return;
     }
@@ -205,8 +207,46 @@ static void can_tx_proc(void)
     can_tx_bus_proc(CAN_BUS_2, &hfdcan2);
 }
 
+static void can_bus_off_recovery_proc(void)
+{
+    uint32_t now = HAL_GetTick();
+
+    for (uint8_t bus = 0; bus < CAN_BUS_TOTAL; bus++)
+    {
+        if (!bus_active[bus] || !bus_off_recovery_pending[bus] ||
+            (int32_t)(now - bus_off_recovery_tick[bus]) < 0)
+        {
+            continue;
+        }
+
+        FDCAN_HandleTypeDef *hfdcan = can_get_handle(bus);
+        HAL_FDCAN_StateTypeDef state = HAL_FDCAN_GetState(hfdcan);
+        if (state == HAL_FDCAN_STATE_BUSY)
+        {
+            if (HAL_FDCAN_Stop(hfdcan) != HAL_OK)
+            {
+                hal_error_code[bus] |= hfdcan->ErrorCode;
+                bus_off_recovery_tick[bus] = now + CAN_BUS_OFF_RECOVERY_DELAY_MS;
+                continue;
+            }
+            state = HAL_FDCAN_GetState(hfdcan);
+        }
+
+        if (state == HAL_FDCAN_STATE_READY && HAL_FDCAN_Start(hfdcan) == HAL_OK)
+        {
+            bus_off_recovery_pending[bus] = false;
+        }
+        else
+        {
+            hal_error_code[bus] |= hfdcan->ErrorCode;
+            bus_off_recovery_tick[bus] = now + CAN_BUS_OFF_RECOVERY_DELAY_MS;
+        }
+    }
+}
+
 void can_process(void)
 {
+    can_bus_off_recovery_proc();
     can_rx_proc();
     can_tx_proc();
 }
@@ -222,7 +262,11 @@ void can_process(void)
 /// @return
 int can_send(uint8_t channel, uint32_t id, bool ide, bool fdf, bool brs, const uint8_t *data, uint8_t len)
 {
-    if (channel >= CAN_BUS_TOTAL || len > 64 || (len > 0 && data == nullptr))
+    if (channel >= CAN_BUS_TOTAL || len > 64 || (len > 0 && data == NULL))
+    {
+        return -1;
+    }
+    if (!bus_active[channel])
     {
         return -1;
     }
@@ -255,17 +299,60 @@ int can_send(uint8_t channel, uint32_t id, bool ide, bool fdf, bool brs, const u
     return 0;
 }
 
-void FDCAN_Filter_Init(FDCAN_HandleTypeDef *hfdcan)
+static bool is_valid_data_bitrate_config(const bitrate_config_t *config)
+{
+    return config->brp >= 1U && config->brp <= 32U &&
+           config->sjw >= 1U && config->sjw <= 16U &&
+           config->tseg1 >= 1U && config->tseg1 <= 32U &&
+           config->tseg2 >= 1U && config->tseg2 <= 16U &&
+           ((uint32_t)config->brp * config->tseg1) <= 0x7fU;
+}
+
+int can_receive(uint8_t bus, can_frame_t *frame)
+{
+    if (bus >= CAN_BUS_TOTAL || frame == NULL || rx_num[bus] == 0)
+    {
+        return -1;
+    }
+
+    *frame = rx_buffer[bus][rx_rd_pos[bus]];
+    rx_rd_pos[bus] = (rx_rd_pos[bus] + 1) % CAN_RX_QUEUE_SIZE;
+    rx_num[bus]--;
+    return 0;
+}
+
+uint32_t can_get_rx_drop_count(uint8_t bus)
+{
+    if (bus >= CAN_BUS_TOTAL)
+    {
+        return 0;
+    }
+    return rx_drop_count[bus];
+}
+
+uint32_t can_get_error_status(uint8_t bus)
+{
+    return (bus < CAN_BUS_TOTAL) ? error_status[bus] : 0;
+}
+
+uint32_t can_get_hal_error(uint8_t bus)
+{
+    return (bus < CAN_BUS_TOTAL) ? hal_error_code[bus] : 0;
+}
+
+void can_clear_errors(uint8_t bus)
+{
+    if (bus < CAN_BUS_TOTAL)
+    {
+        error_status[bus] = 0;
+        hal_error_code[bus] = 0;
+        can_get_handle(bus)->ErrorCode = HAL_FDCAN_ERROR_NONE;
+    }
+}
+
+static int FDCAN_Filter_Init(FDCAN_HandleTypeDef *hfdcan)
 {
     FDCAN_FilterTypeDef sFilterConfig = {0};
-
-    sFilterConfig.IdType = FDCAN_STANDARD_ID;
-    sFilterConfig.FilterIndex = 0;
-    sFilterConfig.FilterType = FDCAN_FILTER_MASK;
-    sFilterConfig.FilterID1 = 0;
-    sFilterConfig.FilterID2 = 0;
-    sFilterConfig.RxBufferIndex = 0;
-    sFilterConfig.IsCalibrationMsg = 0;
 
     if (hfdcan == &hfdcan1)
     {
@@ -275,23 +362,47 @@ void FDCAN_Filter_Init(FDCAN_HandleTypeDef *hfdcan)
     {
         sFilterConfig.FilterConfig = FDCAN_FILTER_TO_RXFIFO1;
     }
-
-    HAL_FDCAN_ConfigFilter(hfdcan, &sFilterConfig);
-    HAL_FDCAN_ConfigGlobalFilter(hfdcan, FDCAN_REJECT, FDCAN_REJECT, FDCAN_FILTER_REMOTE, FDCAN_REJECT_REMOTE);
-
-    if (hfdcan == &hfdcan1)
+    else
     {
-        HAL_FDCAN_ActivateNotification(hfdcan, FDCAN_IT_RX_FIFO0_NEW_MESSAGE, 0);
-    }
-    else if (hfdcan == &hfdcan2)
-    {
-        HAL_FDCAN_ActivateNotification(hfdcan, FDCAN_IT_RX_FIFO1_NEW_MESSAGE, 0);
+        return -1;
     }
 
-    HAL_FDCAN_ConfigTxDelayCompensation(hfdcan, hfdcan->Init.DataPrescaler * hfdcan->Init.DataTimeSeg1, 1);
-    HAL_FDCAN_EnableTxDelayCompensation(hfdcan);
+    sFilterConfig.FilterIndex = 0;
+    sFilterConfig.FilterType = FDCAN_FILTER_MASK;
+    sFilterConfig.FilterID1 = 0;
+    sFilterConfig.FilterID2 = 0;
 
-    HAL_FDCAN_Start(hfdcan);
+    sFilterConfig.IdType = FDCAN_STANDARD_ID;
+    if (HAL_FDCAN_ConfigFilter(hfdcan, &sFilterConfig) != HAL_OK)
+    {
+        return -1;
+    }
+
+    sFilterConfig.IdType = FDCAN_EXTENDED_ID;
+    if (HAL_FDCAN_ConfigFilter(hfdcan, &sFilterConfig) != HAL_OK)
+    {
+        return -1;
+    }
+
+    if (HAL_FDCAN_ConfigGlobalFilter(hfdcan, FDCAN_REJECT, FDCAN_REJECT,
+                                     FDCAN_REJECT_REMOTE, FDCAN_REJECT_REMOTE) != HAL_OK ||
+        HAL_FDCAN_ActivateNotification(hfdcan,
+                                       FDCAN_IT_ERROR_WARNING |
+                                           FDCAN_IT_ERROR_PASSIVE |
+                                           FDCAN_IT_BUS_OFF |
+                                           FDCAN_IT_ARB_PROTOCOL_ERROR |
+                                           FDCAN_IT_DATA_PROTOCOL_ERROR,
+                                       0) != HAL_OK ||
+        HAL_FDCAN_ConfigTxDelayCompensation(hfdcan,
+                                            hfdcan->Init.DataPrescaler * hfdcan->Init.DataTimeSeg1,
+                                            1) != HAL_OK ||
+        HAL_FDCAN_EnableTxDelayCompensation(hfdcan) != HAL_OK ||
+        HAL_FDCAN_Start(hfdcan) != HAL_OK)
+    {
+        return -1;
+    }
+
+    return 0;
 }
 
 int fdcan_config(FDCAN_HandleTypeDef *hfdcan, uint32_t nomi_bitrate, uint32_t data_bitrate)
@@ -319,16 +430,35 @@ int fdcan_config(FDCAN_HandleTypeDef *hfdcan, uint32_t nomi_bitrate, uint32_t da
     {
         return -1;
     }
+    if (!is_valid_data_bitrate_config(&bitrate_configs[data_cfg]))
+    {
+        return -1;
+    }
 
     uint8_t bus = (hfdcan == &hfdcan1) ? CAN_BUS_1 : CAN_BUS_2;
     bus_active[bus] = false;
     can_queue_reset(bus);
+    error_status[bus] = 0;
+    hal_error_code[bus] = 0;
+    bus_off_recovery_pending[bus] = false;
+
+    HAL_FDCAN_StateTypeDef state = HAL_FDCAN_GetState(hfdcan);
+    if (state == HAL_FDCAN_STATE_BUSY && HAL_FDCAN_Stop(hfdcan) != HAL_OK)
+    {
+        return -1;
+    }
+    if (state != HAL_FDCAN_STATE_BUSY && state != HAL_FDCAN_STATE_READY &&
+        state != HAL_FDCAN_STATE_RESET && state != HAL_FDCAN_STATE_ERROR)
+    {
+        return -1;
+    }
+    if (HAL_FDCAN_DeInit(hfdcan) != HAL_OK)
+    {
+        return -1;
+    }
 
     if (hfdcan == &hfdcan1)
     {
-        HAL_FDCAN_Stop(hfdcan);
-        HAL_FDCAN_DeInit(hfdcan);
-
         hfdcan->Instance = FDCAN1;
         hfdcan->Init.FrameFormat = FDCAN_FRAME_FD_BRS;
         hfdcan->Init.Mode = FDCAN_MODE_NORMAL;
@@ -337,11 +467,11 @@ int fdcan_config(FDCAN_HandleTypeDef *hfdcan, uint32_t nomi_bitrate, uint32_t da
         hfdcan->Init.ProtocolException = ENABLE;
 
         hfdcan->Init.NominalPrescaler = bitrate_configs[nomi_cfg].brp;
-        hfdcan->Init.NominalSyncJumpWidth = bitrate_configs[nomi_cfg].tsync;
+        hfdcan->Init.NominalSyncJumpWidth = bitrate_configs[nomi_cfg].sjw;
         hfdcan->Init.NominalTimeSeg1 = bitrate_configs[nomi_cfg].tseg1;
         hfdcan->Init.NominalTimeSeg2 = bitrate_configs[nomi_cfg].tseg2;
         hfdcan->Init.DataPrescaler = bitrate_configs[data_cfg].brp;
-        hfdcan->Init.DataSyncJumpWidth = bitrate_configs[data_cfg].tsync;
+        hfdcan->Init.DataSyncJumpWidth = bitrate_configs[data_cfg].sjw;
         hfdcan->Init.DataTimeSeg1 = bitrate_configs[data_cfg].tseg1;
         hfdcan->Init.DataTimeSeg2 = bitrate_configs[data_cfg].tseg2;
 
@@ -364,14 +494,14 @@ int fdcan_config(FDCAN_HandleTypeDef *hfdcan, uint32_t nomi_bitrate, uint32_t da
         {
             return -1;
         }
-        FDCAN_Filter_Init(hfdcan);
+        if (FDCAN_Filter_Init(hfdcan) != 0)
+        {
+            return -1;
+        }
     }
 
     if (hfdcan == &hfdcan2)
     {
-        HAL_FDCAN_Stop(hfdcan);
-        HAL_FDCAN_DeInit(hfdcan);
-
         hfdcan->Instance = FDCAN2;
         hfdcan->Init.FrameFormat = FDCAN_FRAME_FD_BRS;
         hfdcan->Init.Mode = FDCAN_MODE_NORMAL;
@@ -380,11 +510,11 @@ int fdcan_config(FDCAN_HandleTypeDef *hfdcan, uint32_t nomi_bitrate, uint32_t da
         hfdcan->Init.ProtocolException = ENABLE;
 
         hfdcan->Init.NominalPrescaler = bitrate_configs[nomi_cfg].brp;
-        hfdcan->Init.NominalSyncJumpWidth = bitrate_configs[nomi_cfg].tsync;
+        hfdcan->Init.NominalSyncJumpWidth = bitrate_configs[nomi_cfg].sjw;
         hfdcan->Init.NominalTimeSeg1 = bitrate_configs[nomi_cfg].tseg1;
         hfdcan->Init.NominalTimeSeg2 = bitrate_configs[nomi_cfg].tseg2;
         hfdcan->Init.DataPrescaler = bitrate_configs[data_cfg].brp;
-        hfdcan->Init.DataSyncJumpWidth = bitrate_configs[data_cfg].tsync;
+        hfdcan->Init.DataSyncJumpWidth = bitrate_configs[data_cfg].sjw;
         hfdcan->Init.DataTimeSeg1 = bitrate_configs[data_cfg].tseg1;
         hfdcan->Init.DataTimeSeg2 = bitrate_configs[data_cfg].tseg2;
 
@@ -407,7 +537,10 @@ int fdcan_config(FDCAN_HandleTypeDef *hfdcan, uint32_t nomi_bitrate, uint32_t da
         {
             return -1;
         }
-        FDCAN_Filter_Init(hfdcan);
+        if (FDCAN_Filter_Init(hfdcan) != 0)
+        {
+            return -1;
+        }
     }
 
     return 0;
@@ -416,7 +549,7 @@ int fdcan_config(FDCAN_HandleTypeDef *hfdcan, uint32_t nomi_bitrate, uint32_t da
 int can_connect(uint8_t bus)
 {
     FDCAN_HandleTypeDef *hfdcan = can_get_handle(bus);
-    if (hfdcan == nullptr)
+    if (hfdcan == NULL)
     {
         return -1;
     }
@@ -447,7 +580,7 @@ int can_connect(uint8_t bus)
 int can_unconnect(uint8_t bus)
 {
     FDCAN_HandleTypeDef *hfdcan = can_get_handle(bus);
-    if (hfdcan == nullptr)
+    if (hfdcan == NULL)
     {
         return -1;
     }
@@ -462,10 +595,14 @@ int can_unconnect(uint8_t bus)
     }
     else if (state != HAL_FDCAN_STATE_READY)
     {
+        bus_active[bus] = false;
+        bus_off_recovery_pending[bus] = false;
+        can_queue_reset(bus);
         return -1;
     }
 
     bus_active[bus] = false;
+    bus_off_recovery_pending[bus] = false;
     can_queue_reset(bus);
     return 0;
 }
@@ -473,15 +610,30 @@ int can_unconnect(uint8_t bus)
 // bus-off错误回调
 void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *hfdcan, uint32_t ErrorStatusITs)
 {
-    // log_printf("Can ErrorStatus %08X\n", ErrorStatusITs);
+    int bus = can_get_bus(hfdcan);
+    if (bus < 0)
+    {
+        return;
+    }
+
+    error_status[bus] |= ErrorStatusITs;
+    if ((ErrorStatusITs & FDCAN_IT_BUS_OFF) != 0U)
+    {
+        bus_off_recovery_tick[bus] = HAL_GetTick() + CAN_BUS_OFF_RECOVERY_DELAY_MS;
+        bus_off_recovery_pending[bus] = true;
+    }
 }
 
 void HAL_FDCAN_ErrorCallback(FDCAN_HandleTypeDef *hfdcan)
 {
-    // log_printf("Can Error\n");
+    int bus = can_get_bus(hfdcan);
+    if (bus >= 0)
+    {
+        hal_error_code[bus] |= hfdcan->ErrorCode;
+    }
 }
 
-void can_install_rx_callback(uint8_t bus, can_rx_indicate_t rx_indicate)
+static void can_install_rx_callback(uint8_t bus, can_rx_indicate_t rx_indicate)
 {
     if (bus == CAN_BUS_1)
     {
@@ -493,46 +645,42 @@ void can_install_rx_callback(uint8_t bus, can_rx_indicate_t rx_indicate)
     }
 }
 
-void can_set_bus_active(uint8_t bus, bool active)
+int can_set_bus_active(uint8_t bus, bool active)
 {
     if (active)
     {
-        can_connect(bus);
+        return can_connect(bus);
     }
-    else
-    {
-        can_unconnect(bus);
-    }
+    return can_unconnect(bus);
 }
 
-void can_protocol_rx_frame(uint8_t channel, uint32_t id, bool ide, bool fdf, bool brs, const uint8_t *data, uint8_t len)
+static void can_protocol_rx_frame(uint8_t channel, uint32_t id, bool ide, bool fdf, bool brs,
+                                  const uint8_t *data, uint8_t len)
 {
-    static const uint8_t can_fd_len2dlc[] = // 长度到DLC的转换表（CAN-FD）
-        {
-            0, 1, 2, 3, 4, 5, 6, 7, 8,      /* 0 - 8 */
-            9, 9, 9, 9,                     /* 9 - 12 */
-            10, 10, 10, 10,                 /* 13 - 16 */
-            11, 11, 11, 11,                 /* 17 - 20 */
-            12, 12, 12, 12,                 /* 21 - 24 */
-            13, 13, 13, 13, 13, 13, 13, 13, /* 25 - 32 */
-            14, 14, 14, 14, 14, 14, 14, 14, /* 33 - 40 */
-            14, 14, 14, 14, 14, 14, 14, 14, /* 41 - 48 */
-            15, 15, 15, 15, 15, 15, 15, 15, /* 49 - 56 */
-            15, 15, 15, 15, 15, 15, 15, 15  /* 57 - 64 */
-        };
-    struct ucan_rx_msg can_msg = {0};
+    if (channel >= CAN_BUS_TOTAL || len > 64 || (len > 0 && data == NULL))
+    {
+        return;
+    }
+    if (rx_num[channel] >= CAN_RX_QUEUE_SIZE)
+    {
+        rx_drop_count[channel]++;
+        return;
+    }
 
-    if (len > 64)
-        len = 64;
+    can_frame_t *frame = &rx_buffer[channel][rx_wr_pos[channel]];
+    frame->id = id;
+    frame->ide = ide;
+    frame->fdf = fdf;
+    frame->brs = brs;
+    frame->len = len;
+    memset(frame->data, 0, sizeof(frame->data));
+    if (len > 0)
+    {
+        memcpy(frame->data, data, len);
+    }
 
-    can_msg.channel = channel;
-    can_msg.ide = ide;
-    can_msg.fdf = fdf;
-    can_msg.brs = brs;
-    can_msg.len = can_fd_len2dlc[len];
-
-    can_msg.id = id;
-    memcpy(can_msg.d, data, len);
+    rx_wr_pos[channel] = (rx_wr_pos[channel] + 1) % CAN_RX_QUEUE_SIZE;
+    rx_num[channel]++;
 }
 
 void can_protocol_init(void)
